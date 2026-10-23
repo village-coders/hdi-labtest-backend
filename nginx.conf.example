@@ -1,11 +1,11 @@
-# /etc/nginx/sites-available/hdi-backend
+# /etc/nginx/sites-available/labtest-api.hdiportal.com
 server {
-    server_name api.yourdomain.com; # Replace with your subdomain or server IP
+    server_name labtest-api.hdiportal.com;
 
     client_max_body_size 50M;
 
     location / {
-        proxy_pass http://127.0.0.1:5000;
+        proxy_pass http://127.0.0.1:5005;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';

@@ -1,4 +1,6 @@
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
+import fs from 'fs';
+import path from 'path';
 
 export interface EmailLogEntry {
   id: string;
@@ -16,18 +18,56 @@ export interface EmailLogEntry {
 // Global in-memory log buffer for dashboard visibility
 export const notificationLogs: EmailLogEntry[] = [];
 
-let resendClient: Resend | null = null;
-const apiKey = process.env.RESEND_API_KEY;
+let cachedToken: string | null = null;
+let tokenExpiresAt = 0;
 
-if (apiKey && apiKey.startsWith('re_') && !apiKey.includes('placeholder')) {
-  try {
-    resendClient = new Resend(apiKey);
-    console.log('[Resend Service] Live Resend API initialized');
-  } catch (err) {
-    console.warn('[Resend Service] Failed to initialize Resend client:', err);
+export async function getGraphAccessToken(): Promise<string> {
+  const now = Date.now();
+  if (cachedToken && tokenExpiresAt > now + 60000) {
+    return cachedToken;
   }
-} else {
-  console.log('[Resend Service] Running in Mock/Simulated mode. Emails will be logged to dashboard activity feed.');
+
+  const tenantId = process.env.AZURE_TENANT_ID || 'halalcert.com.ng';
+  const clientId = process.env.AZURE_CLIENT_ID;
+  const clientSecret = process.env.AZURE_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error('Azure client credentials (AZURE_CLIENT_ID / AZURE_CLIENT_SECRET) are missing');
+  }
+
+  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+
+  const params = new URLSearchParams();
+  params.append('grant_type', 'client_credentials');
+  params.append('client_id', clientId);
+  params.append('client_secret', clientSecret);
+  params.append('scope', 'https://graph.microsoft.com/.default');
+
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  const data = (await res.json()) as any;
+  if (!res.ok) {
+    throw new Error(`Failed to acquire Graph token: ${data.error_description || JSON.stringify(data)}`);
+  }
+
+  cachedToken = data.access_token;
+  tokenExpiresAt = Date.now() + (data.expires_in ? data.expires_in * 1000 : 3600000);
+  return data.access_token as string;
+}
+
+function parseRecipients(to?: string | string[]): { emailAddress: { address: string } }[] {
+  if (!to) return [];
+  const list = Array.isArray(to) ? to : String(to).split(/[,;]/);
+  return list
+    .map((item) => {
+      const email = item.includes('<') ? item.replace(/.*<([^>]+)>.*/, '$1').trim() : item.trim();
+      return email ? { emailAddress: { address: email } } : null;
+    })
+    .filter((item): item is { emailAddress: { address: string } } => Boolean(item));
 }
 
 export const getRegistryEmail = (): string => {
@@ -55,24 +95,126 @@ interface DispatchEmailParams {
   sampleCode: string;
 }
 
-const getResendClient = (): Resend | null => {
-  const currentKey = process.env.RESEND_API_KEY;
-  if (currentKey && currentKey.startsWith('re_') && !currentKey.includes('placeholder')) {
-    if (!resendClient) {
-      try {
-        resendClient = new Resend(currentKey);
-        console.log('[Resend Service] Live Resend API initialized successfully');
-      } catch (err) {
-        console.warn('[Resend Service] Failed to initialize Resend client:', err);
-      }
+// Send via Microsoft Graph API with Azure OAuth2 Token
+async function sendMailViaGraph(mailOptions: {
+  from?: string;
+  to: string | string[];
+  cc?: string | string[];
+  bcc?: string | string[];
+  subject: string;
+  html?: string;
+  text?: string;
+  attachments?: Array<{ filename?: string; content?: any; path?: string; contentType?: string }>;
+}) {
+  const token = await getGraphAccessToken();
+  const sender = process.env.EMAIL_USER || 'ict@halalcert.com.ng';
+  const sendMailUrl = `https://graph.microsoft.com/v1.0/users/${sender}/sendMail`;
+
+  const toRecipients = parseRecipients(mailOptions.to);
+  const ccRecipients = parseRecipients(mailOptions.cc);
+  const bccRecipients = parseRecipients(mailOptions.bcc);
+
+  let senderName = 'HDI Lab Portal';
+  let senderAddress = sender;
+
+  const rawFrom = mailOptions.from || `HDI Lab Portal <${sender}>`;
+  if (rawFrom) {
+    const match = String(rawFrom).match(/^(.*?)\s*<(.+)>$/);
+    if (match) {
+      senderName = match[1].replace(/["']/g, '').trim() || 'HDI Lab Portal';
+      senderAddress = match[2].trim() || sender;
+    } else {
+      senderAddress = String(rawFrom).trim();
     }
-    return resendClient;
   }
-  return null;
+
+  const message: any = {
+    subject: mailOptions.subject || '',
+    from: {
+      emailAddress: {
+        name: senderName,
+        address: senderAddress,
+      },
+    },
+    body: {
+      contentType: mailOptions.html ? 'HTML' : 'Text',
+      content: mailOptions.html || mailOptions.text || '',
+    },
+    toRecipients,
+  };
+
+  if (ccRecipients.length > 0) message.ccRecipients = ccRecipients;
+  if (bccRecipients.length > 0) message.bccRecipients = bccRecipients;
+
+  if (Array.isArray(mailOptions.attachments) && mailOptions.attachments.length > 0) {
+    message.attachments = mailOptions.attachments.map((att) => {
+      let contentBytes = '';
+      if (att.content) {
+        contentBytes = Buffer.isBuffer(att.content)
+          ? att.content.toString('base64')
+          : Buffer.from(att.content).toString('base64');
+      } else if (att.path) {
+        contentBytes = fs.readFileSync(att.path).toString('base64');
+      }
+      return {
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: att.filename || path.basename(att.path || 'attachment'),
+        contentType: att.contentType || 'application/octet-stream',
+        contentBytes,
+      };
+    });
+  }
+
+  const res = await fetch(sendMailUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ message, saveToSentItems: 'true' }),
+  });
+
+  if (res.status === 202 || res.status === 200) {
+    return { messageId: `graph-${Date.now()}`, response: '202 Accepted via Microsoft Graph API' };
+  }
+
+  const errData = await res.text();
+  throw new Error(`Microsoft Graph API error (${res.status}): ${errData}`);
+}
+
+// Nodemailer SMTP fallback if basic SMTP is explicitly provided
+const createSmtpTransporter = () => {
+  const port = parseInt(process.env.EMAIL_PORT || '587', 10);
+  const secure = process.env.EMAIL_SECURE === 'true' || port === 465;
+
+  return nodemailer.createTransport({
+    host: process.env.EMAIL_HOST || 'smtp.office365.com',
+    port,
+    secure,
+    requireTLS: true,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: {
+      minVersion: 'TLSv1.2',
+      rejectUnauthorized: false,
+    },
+  });
 };
 
-// Live email dispatch activated for all workflow actions
-const LIVE_EMAIL_DISPATCH_ENABLED = true;
+export const transporter = {
+  sendMail: async (options: any) => {
+    if (process.env.AZURE_CLIENT_ID && process.env.AZURE_CLIENT_SECRET) {
+      return sendMailViaGraph(options);
+    }
+    if (process.env.EMAIL_PASS) {
+      const smtp = createSmtpTransporter();
+      return smtp.sendMail(options);
+    }
+    throw new Error('No email credentials configured (AZURE_CLIENT_ID or EMAIL_PASS required)');
+  },
+};
 
 const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
   const logId = 'log_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
@@ -88,38 +230,38 @@ const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
     timestamp: new Date(),
   };
 
-  try {
-    const client = getResendClient();
-    if (client && LIVE_EMAIL_DISPATCH_ENABLED) {
-      const fromEmail = process.env.RESEND_FROM_EMAIL || 'HDI Lab Portal <onboarding@resend.dev>';
-      const response = await client.emails.send({
-        from: fromEmail,
-        to: params.to,
-        cc: params.cc ? [params.cc] : undefined,
-        subject: params.subject,
-        html: params.htmlContent,
-        text: params.plainText,
-      });
+  const isAzureConfigured = Boolean(process.env.AZURE_CLIENT_ID && process.env.AZURE_CLIENT_SECRET);
+  const isSmtpConfigured = Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
-      if (response.error) {
-        entry.status = 'FAILED';
-        entry.error = response.error.message;
-        console.warn(`[Resend Error Trigger #${params.triggerNumber}]:`, response.error);
-      } else {
-        entry.status = 'SENT';
-        console.log(`[Resend Sent Trigger #${params.triggerNumber}]: ${params.subject} -> ${params.to}`);
-      }
-    } else {
-      entry.status = 'SIMULATED';
-      console.log(`[Resend Activity Logged #${params.triggerNumber}] (Add real RESEND_API_KEY to .env to deliver to real inboxes) TO: ${params.to} | SUBJECT: ${params.subject}`);
-    }
+  if (!isAzureConfigured && !isSmtpConfigured) {
+    entry.status = 'SIMULATED';
+    console.log(`[Email Activity Logged #${params.triggerNumber}] (Simulated Mode - configure AZURE credentials in .env to deliver) TO: ${params.to} | SUBJECT: ${params.subject}`);
+    notificationLogs.unshift(entry);
+    if (notificationLogs.length > 100) notificationLogs.pop();
+    return;
+  }
+
+  try {
+    const sender = process.env.EMAIL_USER || 'ict@halalcert.com.ng';
+    const fromAddress = `HDI Lab Portal <${sender}>`;
+
+    await transporter.sendMail({
+      from: fromAddress,
+      to: params.to,
+      cc: params.cc,
+      subject: params.subject,
+      html: params.htmlContent,
+      text: params.plainText,
+    });
+
+    entry.status = 'SENT';
+    console.log(`[Email Sent Trigger #${params.triggerNumber} via Azure/Nodemailer]: ${params.subject} -> ${params.to}`);
   } catch (err: any) {
     entry.status = 'FAILED';
     entry.error = err?.message || 'Unknown email dispatch error';
-    console.error(`[Resend Dispatch Exception]:`, err);
+    console.error(`[Email Dispatch Exception Trigger #${params.triggerNumber}]:`, err);
   }
 
-  // Keep last 100 logs in memory for review
   notificationLogs.unshift(entry);
   if (notificationLogs.length > 100) {
     notificationLogs.pop();
