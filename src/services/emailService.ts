@@ -301,7 +301,7 @@ const buildHtmlEmail = (title: string, message: string, sampleCode: string, deta
 };
 
 // ==========================================
-// 10 AUTOMATED NOTIFICATION TRIGGERS
+// AUTOMATED NOTIFICATION TRIGGERS
 // ==========================================
 
 // Trigger 1: Sample Registered

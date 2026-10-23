@@ -17,7 +17,7 @@ import {
   notifyCannotPerformTest,
   notifyResultDiscrepancy,
   notificationLogs,
-} from '../services/resendService.js';
+} from '../services/emailService.js';
 
 // Preview next sample code without committing
 export const getPreviewCode = async (req: AuthenticatedRequest, res: Response): Promise<void> => {

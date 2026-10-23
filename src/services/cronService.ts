@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { Sample } from '../models/Sample.js';
-import { notifyPendingResultReminder } from './resendService.js';
+import { notifyPendingResultReminder } from './emailService.js';
 
 export const triggerPendingResultReminders = async (): Promise<number> => {
   try {
