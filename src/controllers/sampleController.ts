@@ -16,6 +16,7 @@ import {
   notifyOneWeekTAT,
   notifyCannotPerformTest,
   notifyResultDiscrepancy,
+  notifyPaymentConfirmedByLab,
   notificationLogs,
   sendTestEmail,
 } from '../services/emailService.js';
@@ -424,6 +425,18 @@ export const updateSample = async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
+
+    // VALIDATION: Cannot close/complete a sample without uploading a Certificate of Analysis
+    if (
+      (workflowStatus === 'Closed' || resultStatus === 'Completed') &&
+      !resultFileUrl &&
+      !sample.resultFileUrl
+    ) {
+      res.status(400).json({
+        message: 'A Certificate of Analysis (CoA) document must be uploaded before marking this sample as Completed or Closed. Please upload the certificate file first.',
+      });
+      return;
+    }
     // Apply updates
     if (workflowStatus && workflowStatus !== sample.workflowStatus) {
       sample.workflowStatus = workflowStatus;
@@ -503,7 +516,14 @@ export const updateSample = async (req: AuthenticatedRequest, res: Response): Pr
       await notifyPaymentSent(sample, receiptNo);
     }
 
-    // Trigger 6: Sample Dispatched (status -> Sent to Lab)
+    // Trigger 14: Lab Confirmed Payment
+    if (paymentConfirmedByLab === true && !req.body._prevPaymentConfirmed) {
+      try {
+        await notifyPaymentConfirmedByLab(sample, req.user?.name || 'Laboratory Desk');
+      } catch (e) { console.error('Payment confirmed notification error:', e); }
+    }
+
+        // Trigger 6: Sample Dispatched (status -> Sent to Lab)
     if (workflowStatus === 'Sent to Lab' && previousStatus !== 'Sent to Lab') {
       await notifySampleDispatched(sample);
     }
@@ -1020,7 +1040,7 @@ export const bulkImportSamples = async (req: AuthenticatedRequest, res: Response
 export const triggerTestEmail = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { toEmail } = req.body;
-    const result = await sendTestEmail(toEmail || 'olabodeidrisalooma@gmail.com');
+    const result = await sendTestEmail(toEmail || 'info@halalcert.com.ng');
     res.json(result);
   } catch (error: any) {
     res.status(500).json({ message: 'Failed to send test email', error: error.message });

@@ -75,7 +75,7 @@ export const getRegistryEmail = (): string => {
     process.env.ADMIN_NOTIFY_EMAIL ||
     process.env.FATIMAH_EMAIL ||
     process.env.COMPANY_NOTIFICATION_EMAIL ||
-    'olabodeidrisalooma@gmail.com'
+    'info@halalcert.com.ng'
   );
 };
 
@@ -222,9 +222,9 @@ export const transporter = {
 };
 
 const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
-  const adminEmail = process.env.ADMIN_NOTIFY_EMAIL || process.env.FATIMAH_EMAIL || 'olabodeidrisalooma@gmail.com';
+  const adminEmail = process.env.ADMIN_NOTIFY_EMAIL || process.env.FATIMAH_EMAIL || 'info@halalcert.com.ng';
 
-  // Ensure olabodeidrisalooma@gmail.com always receives a copy of all notifications
+  // Always CC the admin (info@halalcert.com.ng) on every notification unless they are the primary recipient
   let finalCc = params.cc;
   if (!params.to.toLowerCase().includes(adminEmail.toLowerCase())) {
     finalCc = params.cc ? `${params.cc}, ${adminEmail}` : adminEmail;
@@ -282,8 +282,8 @@ const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
 };
 
 // Send a test email verification directly
-export const sendTestEmail = async (targetEmail: string = 'olabodeidrisalooma@gmail.com'): Promise<{ success: boolean; message: string }> => {
-  const recipient = targetEmail.trim() || 'olabodeidrisalooma@gmail.com';
+export const sendTestEmail = async (targetEmail: string = 'info@halalcert.com.ng'): Promise<{ success: boolean; message: string }> => {
+  const recipient = targetEmail.trim() || 'info@halalcert.com.ng';
   await dispatchEmail({
     triggerNumber: 99,
     triggerName: 'System Test Notification',
@@ -351,6 +351,7 @@ export const notifySampleRegistered = async (sample: any): Promise<void> => {
     triggerNumber: 1,
     triggerName: 'Sample Registered',
     to: labEmail,
+    cc: getRegistryEmail(),
     subject: `[New Registration] Sample ${sample.sampleCode} - ${sample.companyName}`,
     plainText: msg,
     htmlContent: buildHtmlEmail('Sample Registration Confirmation', msg, sample.sampleCode, {
@@ -452,6 +453,7 @@ export const notifySampleDispatched = async (sample: any): Promise<void> => {
     triggerNumber: 6,
     triggerName: 'Sample Dispatched',
     to: labEmail,
+    cc: getRegistryEmail(),
     subject: `[Sample Dispatched] Sample ${sample.sampleCode} En Route`,
     plainText: msg,
     htmlContent: buildHtmlEmail('Dispatch Notification', msg, sample.sampleCode, {
@@ -617,6 +619,30 @@ export const notifyResultDiscrepancy = async (
       'Discrepancy Details': note,
       'Error Markup File': attachmentUrl ? 'Document uploaded & attached' : 'None',
       'Flagged By': adminUser || 'Quality Assurance / Registry',
+    }),
+    sampleCode: sample.sampleCode,
+  });
+};
+
+// Trigger 14: Lab confirmed payment received
+export const notifyPaymentConfirmedByLab = async (sample: any, labUser: string): Promise<void> => {
+  const registryEmail = getRegistryEmail();
+  const labName = sample.receivingLabName || 'Laboratory';
+  const msg = `${labName} has confirmed receipt of payment for sample ${sample.sampleCode} (${sample.sampleName}). Analysis will commence and certificate will be issued within the agreed timeline.`;
+  await dispatchEmail({
+    triggerNumber: 14,
+    triggerName: 'Payment Confirmed by Lab',
+    to: registryEmail,
+    subject: `[Payment Confirmed] Sample ${sample.sampleCode} — ${labName} Acknowledged Payment`,
+    plainText: msg,
+    htmlContent: buildHtmlEmail('Payment Confirmed by Laboratory', msg, sample.sampleCode, {
+      'Sample Code': sample.sampleCode,
+      'Sample Name': sample.sampleName,
+      'Laboratory': labName,
+      'Client Company': sample.companyName,
+      'Receipt / Reference': sample.receiptNo || 'On file',
+      'Confirmed By': labUser || 'Laboratory Desk',
+      'Timestamp': new Date().toLocaleString(),
     }),
     sampleCode: sample.sampleCode,
   });

@@ -10,3 +10,8 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 Thumbs.db
+
+.env.example
+.env.production.example
+.env.local
+.env.development
