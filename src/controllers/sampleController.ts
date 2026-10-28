@@ -17,6 +17,7 @@ import {
   notifyCannotPerformTest,
   notifyResultDiscrepancy,
   notificationLogs,
+  sendTestEmail,
 } from '../services/emailService.js';
 
 // Preview next sample code without committing
@@ -33,12 +34,14 @@ export const getPreviewCode = async (req: AuthenticatedRequest, res: Response): 
   }
 };
 
-// Create a new sample (Section A, B, C)
+// Create a new sample (Section A, B, C or Historical Intake)
 export const createSample = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const {
       sampleName,
       companyName,
+      companyAddress,
+      sampleCode: customSampleCode,
       sampleNature,
       pictureUrl,
       attachmentUrl,
@@ -46,11 +49,29 @@ export const createSample = async (req: AuthenticatedRequest, res: Response): Pr
       expiryDate,
       batchNo,
       nafdacNo,
+      sonNo,
+      isoNo,
+      barcodeNo,
+      otherIdentifier,
       dateOfEntry,
       analysisRequired,
       receivingLabId,
       receivingLabName,
       sentBy,
+      workflowStatus,
+      resultStatus,
+      resultFileUrl,
+      resultComments,
+      processingDate,
+      invoiceNo,
+      invoiceAmount,
+      invoiceFileUrl,
+      receiptNo,
+      receiptFileUrl,
+      paymentConfirmedByLab,
+      isDirectSample,
+      isHistorical,
+      suppressNotifications,
     } = req.body;
 
     if (!sampleName || !companyName || !sampleNature) {
@@ -58,70 +79,145 @@ export const createSample = async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
-    // Auto-generate code atomically
     const entryDate = dateOfEntry ? new Date(dateOfEntry) : new Date();
-    const sampleCode = await generateSampleCode({
-      dateOfEntry: entryDate,
-      sampleNature,
-    });
+
+    // Determine final sample code (user-typed/customized or auto-generated)
+    let sampleCode = (customSampleCode && typeof customSampleCode === 'string' && customSampleCode.trim()) || '';
+    if (sampleCode) {
+      const existingWithCode = await Sample.findOne({ sampleCode });
+      if (existingWithCode) {
+        if (isHistorical) {
+          // If historical import and code collisions exist, make unique
+          sampleCode = `${sampleCode}-${Date.now().toString().slice(-4)}`;
+        } else {
+          res.status(400).json({ message: `Sample Code "${sampleCode}" is already in use. Please enter a unique sample code.` });
+          return;
+        }
+      }
+    } else {
+      sampleCode = await generateSampleCode({
+        dateOfEntry: entryDate,
+        sampleNature,
+      });
+    }
 
     // Ensure company exists in Company collection so it always appears in the companies menu
     let existingCompany = await Company.findOne({ name: companyName.trim() });
     if (!existingCompany) {
       existingCompany = await Company.create({
         name: companyName.trim(),
+        address: companyAddress ? companyAddress.trim() : '',
         contactPerson: 'Lead QA Officer',
         email: `qa@${companyName.trim().toLowerCase().replace(/[^a-z0-9]/g, '') || 'client'}.ng`,
         phone: '+234 800 000 0000',
       });
       console.log(`[Auto-Company]: Automatically registered "${companyName.trim()}" into Company list.`);
+    } else if (companyAddress && !existingCompany.address) {
+      existingCompany.address = companyAddress.trim();
+      await existingCompany.save();
     }
 
-    const initialHistory = [
+    const finalWorkflow = workflowStatus || (isHistorical ? 'Closed' : 'Sent to Lab');
+    const finalResult = resultStatus || (finalWorkflow === 'Closed' || finalWorkflow === 'Result Received' ? 'Completed' : 'Pending');
+
+    const initialHistory: any[] = [
       {
-        status: 'Registered' as const,
+        status: 'Registered',
         changedBy: req.user?.name || sentBy || 'Registry Officer',
-        note: 'Sample registered in portal',
-        timestamp: new Date(),
-      },
-      {
-        status: 'Sent to Lab' as const,
-        changedBy: req.user?.name || sentBy || 'Registry Officer',
-        note: `Automatically dispatched to ${receivingLabName || 'Assigned Laboratory'} upon registration`,
-        timestamp: new Date(),
+        note: isHistorical ? 'Historical sample registered into portal archives' : 'Sample registered in portal',
+        timestamp: entryDate,
       },
     ];
 
+    if (finalWorkflow !== 'Registered') {
+      initialHistory.push({
+        status: 'Sent to Lab',
+        changedBy: req.user?.name || sentBy || 'Registry Officer',
+        note: `Dispatched to ${receivingLabName || 'Assigned Laboratory'}`,
+        timestamp: entryDate,
+      });
+    }
+
+    if (finalWorkflow === 'In Processing' || finalWorkflow === 'Result Received' || finalWorkflow === 'Closed') {
+      initialHistory.push({
+        status: 'In Processing',
+        changedBy: receivingLabName || 'Assigned Laboratory',
+        note: 'Intake confirmed and analytical testing commenced',
+        timestamp: processingDate ? new Date(processingDate) : entryDate,
+      });
+    }
+
+    if (finalWorkflow === 'Result Received' || finalWorkflow === 'Closed') {
+      initialHistory.push({
+        status: 'Result Received',
+        changedBy: receivingLabName || 'Assigned Laboratory',
+        note: resultComments || 'Analytical results and certificate issued',
+        timestamp: processingDate ? new Date(processingDate) : entryDate,
+      });
+    }
+
+    if (finalWorkflow === 'Closed') {
+      initialHistory.push({
+        status: 'Closed',
+        changedBy: req.user?.name || sentBy || 'Registry Officer',
+        note: 'Sample testing record finalized and closed',
+        timestamp: new Date(),
+      });
+    }
+
     const newSample = new Sample({
-      sampleName,
-      companyName,
+      sampleName: sampleName.trim(),
+      companyName: companyName.trim(),
+      companyAddress: companyAddress ? companyAddress.trim() : (existingCompany?.address || ''),
       sampleCode,
       sampleNature,
-      pictureUrl: pictureUrl || '/placeholder-sample.png',
+      pictureUrl: pictureUrl || (sampleNature.toLowerCase().includes('food')
+        ? 'https://images.unsplash.com/photo-1550583724-b2692b85b150?auto=format&fit=crop&w=600&q=80'
+        : 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?auto=format&fit=crop&w=600&q=80'),
       attachmentUrl: attachmentUrl || null,
       productionDate: productionDate ? new Date(productionDate) : undefined,
       expiryDate: expiryDate ? new Date(expiryDate) : undefined,
-      batchNo: batchNo || '',
-      nafdacNo: nafdacNo || '',
+      batchNo: batchNo ? batchNo.trim() : '',
+      nafdacNo: nafdacNo ? nafdacNo.trim() : '',
+      sonNo: sonNo ? sonNo.trim() : '',
+      isoNo: isoNo ? isoNo.trim() : '',
+      barcodeNo: barcodeNo ? barcodeNo.trim() : '',
+      otherIdentifier: otherIdentifier ? otherIdentifier.trim() : '',
       dateOfEntry: entryDate,
-      analysisRequired: Array.isArray(analysisRequired) ? analysisRequired : [analysisRequired || 'Standard Analysis'],
+      analysisRequired: Array.isArray(analysisRequired) && analysisRequired.length > 0
+        ? analysisRequired
+        : [analysisRequired || 'Standard Analysis'],
       receivingLabId: receivingLabId || 'LAB_1',
       receivingLabName: receivingLabName || 'Standard Analytical Laboratories',
+      processingDate: processingDate ? new Date(processingDate) : (finalWorkflow === 'Closed' ? entryDate : undefined),
       sentBy: sentBy || req.user?.name || 'Registry Officer',
-      workflowStatus: 'Sent to Lab',
-      resultStatus: 'Pending',
+      invoiceNo: invoiceNo ? String(invoiceNo).trim() : '',
+      invoiceAmount: invoiceAmount ? String(invoiceAmount).trim() : '',
+      invoiceFileUrl: invoiceFileUrl || null,
+      invoiceAcknowledged: Boolean(invoiceNo),
+      receiptNo: receiptNo ? String(receiptNo).trim() : '',
+      receiptFileUrl: receiptFileUrl || null,
+      paymentConfirmedByLab: paymentConfirmedByLab !== undefined ? Boolean(paymentConfirmedByLab) : Boolean(receiptNo),
+      isDirectSample: Boolean(isDirectSample || isHistorical),
+      isHistorical: Boolean(isHistorical || isDirectSample),
+      resultStatus: finalResult,
+      resultFileUrl: resultFileUrl || null,
+      resultComments: resultComments || '',
+      workflowStatus: finalWorkflow,
       statusHistory: initialHistory,
       comments: [],
     });
 
     await newSample.save();
 
-    // Trigger: Sample Registered & automatically dispatched to Lab
-    try {
-      await notifySampleRegistered(newSample);
-      await notifySampleDispatched(newSample);
-    } catch (e) {
-      console.error('Registration/dispatch notification error:', e);
+    // Trigger emails only if not historical or notifications not suppressed
+    if (!isHistorical && !suppressNotifications) {
+      try {
+        await notifySampleRegistered(newSample);
+        await notifySampleDispatched(newSample);
+      } catch (e) {
+        console.error('Registration/dispatch notification error:', e);
+      }
     }
 
     res.status(201).json({ sample: newSample, message: 'Sample created successfully' });
@@ -508,7 +604,7 @@ export const getCompanies = async (_req: AuthenticatedRequest, res: Response): P
 
 export const createCompany = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { name, contactPerson, email, phone } = req.body;
+    const { name, address, contactPerson, email, phone } = req.body;
     if (!name || !name.trim()) {
       res.status(400).json({ message: 'Company name is required' });
       return;
@@ -516,12 +612,17 @@ export const createCompany = async (req: AuthenticatedRequest, res: Response): P
 
     const existing = await Company.findOne({ name: name.trim() });
     if (existing) {
+      if (address && !existing.address) {
+        existing.address = address.trim();
+        await existing.save();
+      }
       res.status(200).json({ company: existing, message: 'Company already exists' });
       return;
     }
 
     const company = new Company({
       name: name.trim(),
+      address: address ? address.trim() : '',
       contactPerson: contactPerson || '',
       email: email || '',
       phone: phone || '',
@@ -752,3 +853,176 @@ export const permanentlyDeleteSample = async (req: AuthenticatedRequest, res: Re
   }
 };
 
+
+// Bulk Import Previous/Historical Samples (from CSV or Excel)
+export const bulkImportSamples = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { samples, suppressNotifications = true } = req.body;
+    if (!Array.isArray(samples) || samples.length === 0) {
+      res.status(400).json({ message: 'A non-empty list of samples is required for bulk import.' });
+      return;
+    }
+
+    const importedList: any[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < samples.length; i++) {
+      const item = samples[i];
+      const sName = item.sampleName ? String(item.sampleName).trim() : '';
+      const cName = item.companyName ? String(item.companyName).trim() : '';
+      if (!sName || !cName) {
+        errors.push(`Row #${i + 1} skipped: Sample Name and Company Name are required.`);
+        continue;
+      }
+
+      const entryDate = item.dateOfEntry ? new Date(item.dateOfEntry) : new Date();
+      const sNature = item.sampleNature ? String(item.sampleNature).trim() : 'Food / Beverage';
+
+      // Determine sampleCode
+      let sampleCode = item.sampleCode ? String(item.sampleCode).trim() : '';
+      if (!sampleCode) {
+        sampleCode = await generateSampleCode({ dateOfEntry: entryDate, sampleNature: sNature });
+      } else {
+        const existing = await Sample.findOne({ sampleCode });
+        if (existing) {
+          sampleCode = `${sampleCode}-${Date.now().toString().slice(-4)}`;
+        }
+      }
+
+      // Auto-create or link company
+      let existingCompany = await Company.findOne({ name: cName });
+      if (!existingCompany) {
+        existingCompany = await Company.create({
+          name: cName,
+          address: item.companyAddress ? String(item.companyAddress).trim() : '',
+          contactPerson: 'Lead QA Officer',
+          email: `qa@${cName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'client'}.ng`,
+          phone: '+234 800 000 0000',
+        });
+      } else if (item.companyAddress && !existingCompany.address) {
+        existingCompany.address = String(item.companyAddress).trim();
+        await existingCompany.save();
+      }
+
+      const finalWorkflowStatus = item.workflowStatus || 'Closed';
+      const finalResultStatus = item.resultStatus || (finalWorkflowStatus === 'Closed' || finalWorkflowStatus === 'Result Received' ? 'Completed' : 'Pending');
+
+      const history: any[] = [
+        {
+          status: 'Registered',
+          changedBy: req.user?.name || item.sentBy || 'Registry Officer',
+          note: 'Historical sample batch imported into portal archives',
+          timestamp: entryDate,
+        },
+      ];
+
+      if (finalWorkflowStatus !== 'Registered') {
+        history.push({
+          status: 'Sent to Lab',
+          changedBy: req.user?.name || item.sentBy || 'Registry Officer',
+          note: `Dispatched to ${item.receivingLabName || 'Assigned Laboratory'}`,
+          timestamp: entryDate,
+        });
+      }
+
+      if (finalWorkflowStatus === 'In Processing' || finalWorkflowStatus === 'Result Received' || finalWorkflowStatus === 'Closed') {
+        history.push({
+          status: 'In Processing',
+          changedBy: item.receivingLabName || 'Assigned Laboratory',
+          note: 'Sample received and tested',
+          timestamp: item.processingDate ? new Date(item.processingDate) : entryDate,
+        });
+      }
+
+      if (finalWorkflowStatus === 'Result Received' || finalWorkflowStatus === 'Closed') {
+        history.push({
+          status: 'Result Received',
+          changedBy: item.receivingLabName || 'Assigned Laboratory',
+          note: item.resultComments || 'Historical analytical results and certificate recorded',
+          timestamp: item.processingDate ? new Date(item.processingDate) : entryDate,
+        });
+      }
+
+      if (finalWorkflowStatus === 'Closed') {
+        history.push({
+          status: 'Closed',
+          changedBy: req.user?.name || item.sentBy || 'Registry Officer',
+          note: 'Historical record closed and archived',
+          timestamp: new Date(),
+        });
+      }
+
+      let parsedAnalysis: string[] = ['Standard Analysis'];
+      if (Array.isArray(item.analysisRequired) && item.analysisRequired.length > 0) {
+        parsedAnalysis = item.analysisRequired;
+      } else if (typeof item.analysisRequired === 'string' && item.analysisRequired.trim()) {
+        parsedAnalysis = item.analysisRequired.split(',').map((s: string) => s.trim()).filter(Boolean);
+      }
+
+      const doc = new Sample({
+        sampleName: sName,
+        companyName: cName,
+        companyAddress: item.companyAddress ? String(item.companyAddress).trim() : (existingCompany.address || ''),
+        sampleCode,
+        sampleNature: sNature,
+        pictureUrl: item.pictureUrl || (sNature.toLowerCase().includes('food')
+          ? 'https://images.unsplash.com/photo-1550583724-b2692b85b150?auto=format&fit=crop&w=600&q=80'
+          : 'https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?auto=format&fit=crop&w=600&q=80'),
+        attachmentUrl: item.attachmentUrl || null,
+        productionDate: item.productionDate ? new Date(item.productionDate) : undefined,
+        expiryDate: item.expiryDate ? new Date(item.expiryDate) : undefined,
+        batchNo: item.batchNo ? String(item.batchNo).trim() : '',
+        nafdacNo: item.nafdacNo ? String(item.nafdacNo).trim() : '',
+        sonNo: item.sonNo ? String(item.sonNo).trim() : '',
+        isoNo: item.isoNo ? String(item.isoNo).trim() : '',
+        barcodeNo: item.barcodeNo ? String(item.barcodeNo).trim() : '',
+        otherIdentifier: item.otherIdentifier ? String(item.otherIdentifier).trim() : '',
+        dateOfEntry: entryDate,
+        analysisRequired: parsedAnalysis,
+        receivingLabId: item.receivingLabId || 'LAB_1',
+        receivingLabName: item.receivingLabName || 'Standard Analytical Laboratories',
+        processingDate: item.processingDate ? new Date(item.processingDate) : (finalWorkflowStatus === 'Closed' ? entryDate : undefined),
+        sentBy: item.sentBy || req.user?.name || 'Registry Officer',
+        invoiceNo: item.invoiceNo ? String(item.invoiceNo).trim() : '',
+        invoiceAmount: item.invoiceAmount ? String(item.invoiceAmount).trim() : '',
+        invoiceFileUrl: item.invoiceFileUrl || null,
+        invoiceAcknowledged: Boolean(item.invoiceNo),
+        receiptNo: item.receiptNo ? String(item.receiptNo).trim() : '',
+        receiptFileUrl: item.receiptFileUrl || null,
+        paymentConfirmedByLab: Boolean(item.receiptNo),
+        isDirectSample: true,
+        isHistorical: true,
+        resultStatus: finalResultStatus,
+        resultFileUrl: item.resultFileUrl || null,
+        resultComments: item.resultComments || 'Historical analysis record imported into dashboard.',
+        workflowStatus: finalWorkflowStatus,
+        statusHistory: history,
+        comments: [],
+      });
+
+      await doc.save();
+      importedList.push(doc);
+    }
+
+    res.status(201).json({
+      message: `Successfully imported ${importedList.length} previous samples`,
+      count: importedList.length,
+      samples: importedList,
+      errors: errors.length > 0 ? errors : undefined,
+    });
+  } catch (error: any) {
+    console.error('Bulk import error:', error);
+    res.status(500).json({ message: 'Error during bulk import of samples', error: error.message });
+  }
+};
+
+// Dispatch a live test email verification
+export const triggerTestEmail = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { toEmail } = req.body;
+    const result = await sendTestEmail(toEmail || 'olabodeidrisalooma@gmail.com');
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ message: 'Failed to send test email', error: error.message });
+  }
+};

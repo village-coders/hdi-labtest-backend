@@ -42,7 +42,8 @@ export const generateSampleCode = async (params: GenerateCodeParams): Promise<st
   const seqNumber = counter.seq;
   const paddedSeq = String(seqNumber).padStart(3, '0');
 
-  return `${prefix}/${mm}/${yy}/Ext${paddedSeq}`;
+  // Format: [prefix]/[month][year]/Ext[seq] (e.g. FD/1026/Ext001 - no stroke between month and year)
+  return `${prefix}/${mm}${yy}/Ext${paddedSeq}`;
 };
 
 export const previewNextSampleCode = async (params: GenerateCodeParams): Promise<string> => {
@@ -54,5 +55,6 @@ export const previewNextSampleCode = async (params: GenerateCodeParams): Promise
   const nextSeq = (counter ? counter.seq : 0) + 1;
   const paddedSeq = String(nextSeq).padStart(3, '0');
 
-  return `${prefix}/${mm}/${yy}/Ext${paddedSeq}`;
+  // Format: [prefix]/[month][year]/Ext[seq] (e.g. FD/1026/Ext001 - no stroke between month and year)
+  return `${prefix}/${mm}${yy}/Ext${paddedSeq}`;
 };

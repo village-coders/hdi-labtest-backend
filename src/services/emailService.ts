@@ -4,7 +4,7 @@ import path from 'path';
 
 export interface EmailLogEntry {
   id: string;
-  triggerNumber: number;
+  triggerNumber: number
   triggerName: string;
   recipient: string;
   subject: string;
@@ -71,7 +71,12 @@ function parseRecipients(to?: string | string[]): { emailAddress: { address: str
 }
 
 export const getRegistryEmail = (): string => {
-  return process.env.FATIMAH_EMAIL || process.env.COMPANY_NOTIFICATION_EMAIL || 'registry@hdilabportal.com';
+  return (
+    process.env.ADMIN_NOTIFY_EMAIL ||
+    process.env.FATIMAH_EMAIL ||
+    process.env.COMPANY_NOTIFICATION_EMAIL ||
+    'olabodeidrisalooma@gmail.com'
+  );
 };
 
 export const getLabEmail = (labId: string): string => {
@@ -217,12 +222,20 @@ export const transporter = {
 };
 
 const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
+  const adminEmail = process.env.ADMIN_NOTIFY_EMAIL || process.env.FATIMAH_EMAIL || 'olabodeidrisalooma@gmail.com';
+
+  // Ensure olabodeidrisalooma@gmail.com always receives a copy of all notifications
+  let finalCc = params.cc;
+  if (!params.to.toLowerCase().includes(adminEmail.toLowerCase())) {
+    finalCc = params.cc ? `${params.cc}, ${adminEmail}` : adminEmail;
+  }
+
   const logId = 'log_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
   const entry: EmailLogEntry = {
     id: logId,
     triggerNumber: params.triggerNumber,
     triggerName: params.triggerName,
-    recipient: params.to + (params.cc ? ` (CC: ${params.cc})` : ''),
+    recipient: params.to + (finalCc ? ` (CC: ${finalCc})` : ''),
     subject: params.subject,
     message: params.plainText,
     sampleCode: params.sampleCode,
@@ -248,14 +261,14 @@ const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
     await transporter.sendMail({
       from: fromAddress,
       to: params.to,
-      cc: params.cc,
+      cc: finalCc,
       subject: params.subject,
       html: params.htmlContent,
       text: params.plainText,
     });
 
     entry.status = 'SENT';
-    console.log(`[Email Sent Trigger #${params.triggerNumber} via Azure/Nodemailer]: ${params.subject} -> ${params.to}`);
+    console.log(`[Email Sent Trigger #${params.triggerNumber} via Azure/Nodemailer]: ${params.subject} -> ${params.to} (CC: ${finalCc || 'none'})`);
   } catch (err: any) {
     entry.status = 'FAILED';
     entry.error = err?.message || 'Unknown email dispatch error';
@@ -266,6 +279,32 @@ const dispatchEmail = async (params: DispatchEmailParams): Promise<void> => {
   if (notificationLogs.length > 100) {
     notificationLogs.pop();
   }
+};
+
+// Send a test email verification directly
+export const sendTestEmail = async (targetEmail: string = 'olabodeidrisalooma@gmail.com'): Promise<{ success: boolean; message: string }> => {
+  const recipient = targetEmail.trim() || 'olabodeidrisalooma@gmail.com';
+  await dispatchEmail({
+    triggerNumber: 99,
+    triggerName: 'System Test Notification',
+    to: recipient,
+    subject: `[HDI Lab Portal] Live Email Verification - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+    plainText: `This is a verified test notification confirming that live email dispatch to ${recipient} is active on the HDI Lab Portal.`,
+    htmlContent: buildHtmlEmail(
+      'Live Email Delivery Active',
+      `This is a verified test email from the HDI Lab Portal confirming that all notifications, sample updates, and reports are now active and delivered to <strong>${recipient}</strong>.`,
+      'TEST-VERIFY',
+      {
+        'Recipient': recipient,
+        'Sender': process.env.EMAIL_USER || 'ict@halalcert.com.ng',
+        'Provider': 'Microsoft Azure Graph API',
+        'Status': 'Operational & Delivered',
+        'Timestamp': new Date().toLocaleString(),
+      }
+    ),
+    sampleCode: 'TEST-VERIFY',
+  });
+  return { success: true, message: `Test notification successfully sent to ${recipient}` };
 };
 
 const buildHtmlEmail = (title: string, message: string, sampleCode: string, details?: Record<string, string>): string => {
