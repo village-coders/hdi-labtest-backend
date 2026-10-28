@@ -17,6 +17,8 @@ import {
   softDeleteSample,
   restoreSample,
   permanentlyDeleteSample,
+  bulkImportSamples,
+  triggerTestEmail,
 } from '../controllers/sampleController.js';
 import { getDashboardStats, exportExcelReport, exportPdfReport } from '../controllers/reportController.js';
 import { getCommunications, createCommunication, updateCommunicationStatus } from '../controllers/communicationController.js';
@@ -40,6 +42,7 @@ router.get('/samples/preview-code', authenticateToken, getPreviewCode);
 router.get('/samples/deleted-bin', authenticateToken, requireSuperAdmin, getDeletedSamples);
 router.get('/samples', authenticateToken, getSamples);
 router.post('/samples', authenticateToken, createSample);
+router.post('/samples/bulk-import', authenticateToken, bulkImportSamples);
 router.get('/samples/:id', authenticateToken, getSampleById);
 router.patch('/samples/:id', authenticateToken, updateSample);
 router.delete('/samples/:id', authenticateToken, requireSuperAdmin, softDeleteSample);
@@ -61,6 +64,7 @@ router.patch('/communications/:id/status', authenticateToken, updateCommunicatio
 
 // Notifications Feed
 router.get('/notifications', authenticateToken, getNotificationsFeed);
+router.post('/notifications/test-email', authenticateToken, triggerTestEmail);
 
 // Reports & Statistics
 router.get('/reports/dashboard-stats', authenticateToken, getDashboardStats);

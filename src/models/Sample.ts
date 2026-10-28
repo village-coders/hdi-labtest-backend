@@ -31,16 +31,21 @@ export interface ISample extends Document {
   // Section A: Sample Information
   sampleName: string;
   companyName: string;
-  sampleCode: string; // FD/MM/YY/ExtXXX or NF/MM/YY/ExtXXX
+  companyAddress?: string;
+  sampleCode: string; // FD/MMYY/ExtXXX or NF/MMYY/ExtXXX
   sampleNature: string; // Food / Food Grade, Non-Food, etc.
   pictureUrl: string;
   attachmentUrl?: string;
 
-  // Section B: Product Details
+  // Section B: Product Details (Optional)
   productionDate?: Date;
   expiryDate?: Date;
   batchNo?: string;
   nafdacNo?: string;
+  sonNo?: string;
+  isoNo?: string;
+  barcodeNo?: string;
+  otherIdentifier?: string;
 
   // Section C: Receipt & Dispatch Tracking
   dateOfEntry: Date;
@@ -78,6 +83,9 @@ export interface ISample extends Document {
   rejectedAt?: Date;
   rejectedBy?: string;
 
+  // Soft delete / Deleted Bin (Super Admin only)
+  isDirectSample?: boolean;
+  isHistorical?: boolean;
   isDeleted?: boolean;
   deletedAt?: Date | null;
   deletedBy?: string | null;
@@ -113,6 +121,7 @@ const SampleSchema: Schema = new Schema(
     // Section A
     sampleName: { type: String, required: true, trim: true },
     companyName: { type: String, required: true, trim: true },
+    companyAddress: { type: String, default: '' },
     sampleCode: { type: String, required: true, unique: true, index: true },
     sampleNature: { type: String, required: true },
     pictureUrl: { type: String, required: true },
@@ -123,6 +132,10 @@ const SampleSchema: Schema = new Schema(
     expiryDate: { type: Date, default: null },
     batchNo: { type: String, default: '' },
     nafdacNo: { type: String, default: '' },
+    sonNo: { type: String, default: '' },
+    isoNo: { type: String, default: '' },
+    barcodeNo: { type: String, default: '' },
+    otherIdentifier: { type: String, default: '' },
 
     // Section C
     dateOfEntry: { type: Date, required: true, default: Date.now },
@@ -168,6 +181,8 @@ const SampleSchema: Schema = new Schema(
     rejectedBy: { type: String, default: null },
 
     // Soft delete / Deleted Bin (Super Admin only)
+    isDirectSample: { type: Boolean, default: false, index: true },
+    isHistorical: { type: Boolean, default: false, index: true },
     isDeleted: { type: Boolean, default: false, index: true },
     deletedAt: { type: Date, default: null },
     deletedBy: { type: String, default: null },
@@ -177,4 +192,3 @@ const SampleSchema: Schema = new Schema(
 );
 
 export const Sample = mongoose.model<ISample>('Sample', SampleSchema);
-
