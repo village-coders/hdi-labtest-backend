@@ -7,11 +7,11 @@ export interface GenerateCodeParams {
 
 export const determineCodePrefix = (sampleNature: string): 'FD' | 'NF' => {
   if (!sampleNature) return 'FD';
+  // 'Food - Solid/Liquid/Semi-Solid' => FD prefix; 'Non-Food - ...' => NF prefix
   const lower = sampleNature.toLowerCase();
   if (
-    lower.includes('food') ||
-    lower.includes('beverage') ||
-    lower.includes('edible') ||
+    lower.startsWith('food') ||
+        lower.includes('edible') ||
     lower.includes('snack') ||
     lower.includes('confectionery') ||
     lower.startsWith('fd')
